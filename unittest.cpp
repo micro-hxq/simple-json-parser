@@ -173,6 +173,14 @@ static void test_parse_string()
     EXPECT_EQ_DOUBLE(10.5, getNumber(v));
 }
 
+static void test_parse_unicode()
+{
+    Json_value v;
+    v.type = Json_t::json_string;
+    EXPECT_EQ_CAST_INT(State::ok, parse(&v, "\"hell\u006f\u0020 worl\u0064\""));
+    EXPECT_EQ_STRING("hello  world", getString(v), 12);
+}
+
 static void test_parse()
 {
     test_parse_null();
@@ -184,6 +192,7 @@ static void test_parse()
     test_number();
     test_access_string();
     test_parse_string();
+    test_parse_unicode();
 }
 
 int main()

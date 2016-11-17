@@ -30,7 +30,9 @@ enum class State {
     root_not_singular,
     number_too_big,
     miss_quotation_mark,
-    invalid_string_escape
+    invalid_string_escape,
+    invalid_unicode_hex,
+    invalid_unicode_surrogate
 };
 
 struct Json_value {
@@ -81,9 +83,9 @@ void        setString(Json_value *pv, const char* str, std::size_t size);
 const char* getString(const Json_value &v);
 std::size_t getStringLength(const Json_value &v);
 Json_t      getType(const Json_value& v);
-double      getNumber(const Json_value &v);
 
-
+const char* parseHex4(const char* p, unsigned* u);
+void        encodeUTF8(Context *pc, unsigned u);
 
 
 

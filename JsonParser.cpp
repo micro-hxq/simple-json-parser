@@ -16,6 +16,7 @@
 #endif
 
 #define PUSHC(pc, ch)       do { *static_cast<char*>(contextPush(pc, sizeof(char))) = (ch); } while(0)
+#define STRING_ERROR(ret)   do { pc->top = head; return ret; } while(0)
 
 wt::json::State wt::json::parse(wt::json::Json_value *pv, const std::string &js)
 {
@@ -129,6 +130,7 @@ wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_valu
 {
     std::size_t head = pc->top, len;
     const char* pCur = pc->pJson;
+    unsigned u = 0;
     assert(*pCur == '\"');
     ++pCur;
     for(;;)
@@ -152,6 +154,24 @@ wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_valu
                     case 'n':  PUSHC(pc, '\n'); break;
                     case 'r':  PUSHC(pc, '\r'); break;
                     case 't':  PUSHC(pc, '\t'); break;
+                    case 'u':
+                        if(!(pCur = parseHex4(pCur, &u)))
+                            STRING_ERROR(State::invalid_unicode_hex);
+                        if(u >= 0xD800 && u <= 0xDBFF)
+                        {
+                            unsigned u2 = 0;
+                            if(*pCur++ != '\\')
+                                STRING_ERROR(State::invalid_unicode_surrogate);
+                            if(*pCur++ != 'u');
+                                STRING_ERROR(State::invalid_unicode_surrogate);
+                            if(!(pCur = parseHex4(pCur, &u2)))
+                                STRING_ERROR(State::invalid_unicode_hex);
+                            if(u2 < 0xDC00 || u2 > 0xDFFF)
+                                STRING_ERROR(State::invalid_unicode_surrogate);
+                            u = 0x10000 + (((u - 0xD800) << 10) | (u2 - 0xDC00));
+                        }
+                        encodeUTF8(pc, u);
+                        break;
                     default:
                         pc->top = head;
                         return State::invalid_string_escape;
@@ -251,4 +271,50 @@ bool wt::json::getBool(const wt::json::Json_value &v)
 {
     assert(v.type == Json_t::json_true || v.type == Json_t::json_false);
     return v.type == Json_t::json_true;
+}
+
+const char* wt::json::parseHex4(const char *p, unsigned *u)
+{
+    *u = 0;
+    for(int i = 0; i < 4; ++i)
+    {
+        char ch = *p++;
+        *u <<= 4;
+        if(ch >= '0' && ch <= '9')
+            *u |= ch - '0';
+        else if(ch >= 'A' && ch <= 'F')
+            *u |= ch - 'A' + 10;
+        else if(ch >= 'a' && ch <= 'f')
+            *u |= ch - 'a' + 10;
+        else
+            return nullptr;
+    }
+    return p;
+}
+
+void wt::json::encodeUTF8(wt::json::Context *pc, unsigned u)
+{
+    assert(u <= 0x10FFFF);
+    if(u <= 0x7F)
+    {
+        PUSHC(pc, u & 0xFF);
+    }
+    else if(u <= 0x7FF)
+    {
+        PUSHC(pc, 0xC0 | ((u >> 6) & 0x1F));
+        PUSHC(pc, 0x80 | (u & 0x3F));
+    }
+    else if(u <= 0xFFFF)
+    {
+        PUSHC(pc, 0xE0 | ((u >> 12) & 0x0F));
+        PUSHC(pc, 0x80 | ((u >> 6) & 0x3F));
+        PUSHC(pc, 0x80 | (u & 0x3F));
+    }
+    else
+    {
+        PUSHC(pc, 0xF0 | ((u >> 18) & 0x07));
+        PUSHC(pc, 0x80 | ((u >> 12) & 0x3F));
+        PUSHC(pc, 0x80 | ((u >> 6) & 0x3F));
+        PUSHC(pc, 0x80 | (u & 0x3F));
+    }
 }

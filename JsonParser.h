@@ -8,6 +8,7 @@
 #include <type_traits>
 #include <string>
 
+
 #define initJson(pv)        do { (pv)->type = Json_t::json_null; } while(0)
 
 namespace wt {
@@ -20,7 +21,7 @@ enum class Json_t {
     json_number,
     json_string,
     json_array,
-    json_object
+    json_object,
 };
 
 enum class State {
@@ -32,8 +33,14 @@ enum class State {
     miss_quotation_mark,
     invalid_string_escape,
     invalid_unicode_hex,
-    invalid_unicode_surrogate
+    invalid_unicode_surrogate,
+    miss_comma_or_square_bracket,
+    miss_key,
+    miss_colon,
+    miss_comma_or_curly_bracket
 };
+
+struct Json_member;
 
 struct Json_value {
     Json_t type;
@@ -41,9 +48,23 @@ struct Json_value {
         double number;
         struct {
             char* pstr;
-            std::size_t len;
+            size_t len;
+        };
+        struct {
+            Json_value* pa;
+            size_t asize;
+        };
+        struct {
+            Json_member* po;
+            size_t osize;
         };
     };
+};
+
+struct Json_member {
+    char*       pk;
+    size_t      klen;
+    Json_value  val;
 };
 
 struct Context {
@@ -66,8 +87,10 @@ State       parseFalse(Context *pc, Json_value *pv);
 State       parseTrue(Context *pc, Json_value *pv);
 State       parseValue(Context* pc, Json_value* pv);
 State       parseNumber(Context *pc, Json_value *pv);
+State       parseStringRaw(Context *pc, char** str, size_t *len);
 State       parseString(Context *pc, Json_value *pv);
-
+State       parseArray(Context *pc, Json_value *pv);
+State       parseObject(Context *pc, Json_value *pv);
 
 void        freeJson(Json_value *pv);
 void*       contextPush(Context *pc, std::size_t size);
@@ -87,7 +110,13 @@ Json_t      getType(const Json_value& v);
 const char* parseHex4(const char* p, unsigned* u);
 void        encodeUTF8(Context *pc, unsigned u);
 
+size_t      getArraySize(const Json_value &pv);
+Json_value* getArrayElem(const Json_value &pv, size_t index);
 
+size_t      getObjectsize(const Json_value &pv);
+const char* getObjectKey(const Json_value &pv, size_t index);
+size_t      getObjectKeyLen(const Json_value &pv, size_t index);
+Json_value* getObjectValue(const Json_value &pv, size_t index);
 
 } // namespace json
 } // namespace wt

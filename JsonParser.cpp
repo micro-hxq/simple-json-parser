@@ -39,7 +39,7 @@ wt::json::State wt::json::parse(wt::json::Json_value *pv, const std::string &js)
         }
     }
     assert(c.top == 0);
-    ::free(c.pStack);
+    free(c.pStack);
     return state;
 }
 
@@ -87,6 +87,8 @@ wt::json::State wt::json::parseValue(wt::json::Context *pc, wt::json::Json_value
         case 'f':   return parseFalse(pc, pv);
         case 't':   return parseTrue(pc, pv);
         case '\"':  return parseString(pc, pv);
+        case '[':   return parseArray(pc, pv);
+        case '{':   return parseObject(pc, pv);
         case '\0':  return State::except_value;
         default:    return parseNumber(pc, pv);
     }
@@ -126,9 +128,9 @@ wt::json::State wt::json::parseNumber(wt::json::Context *pc, wt::json::Json_valu
     return State::ok;
 }
 
-wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_value *pv)
+wt::json::State wt::json::parseStringRaw(Context *pc, char **str, size_t *len)
 {
-    std::size_t head = pc->top, len;
+    size_t head = pc->top;
     const char* pCur = pc->pJson;
     unsigned u = 0;
     assert(*pCur == '\"');
@@ -139,8 +141,8 @@ wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_valu
         switch(ch)
         {
             case '\"':
-                len = pc->top - head;
-                setString(pv, static_cast<const char*>(contextPop(pc, len)), len);
+                *len = pc->top - head;
+                *str = static_cast<char*>(contextPop(pc, *len));
                 pc->pJson = pCur;
                 return State::ok;
             case '\\':
@@ -163,7 +165,7 @@ wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_valu
                             if(*pCur++ != '\\')
                                 STRING_ERROR(State::invalid_unicode_surrogate);
                             if(*pCur++ != 'u');
-                                STRING_ERROR(State::invalid_unicode_surrogate);
+                            STRING_ERROR(State::invalid_unicode_surrogate);
                             if(!(pCur = parseHex4(pCur, &u2)))
                                 STRING_ERROR(State::invalid_unicode_hex);
                             if(u2 < 0xDC00 || u2 > 0xDFFF)
@@ -189,6 +191,141 @@ wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_valu
                 PUSHC(pc, ch);
         }
     }
+}
+
+wt::json::State wt::json::parseString(wt::json::Context *pc, wt::json::Json_value *pv)
+{
+    State ret;
+    char* str;
+    size_t len;
+    if((ret = parseStringRaw(pc, &str, &len)) == State::ok)
+        setString(pv, str, len);
+    return ret;
+}
+
+wt::json::State  wt::json::parseArray(Context *pc, Json_value *pv)
+{
+    size_t size = 0;
+    State ret;
+    ++pc->pJson;
+    parseWhiteSpace(pc);
+    if(*pc->pJson == ']')
+    {
+        ++pc->pJson;
+        pv->asize = 0;
+        pv->pa = nullptr;
+        pv->type = Json_t::json_array;
+        return State::ok;
+    }
+    for(;;)
+    {
+        Json_value tmp;
+        initJson(&tmp);
+        if((ret = parseValue(pc, &tmp)) != State::ok)
+            return ret;
+        memcpy(contextPush(pc, sizeof(Json_value)), &tmp, sizeof(Json_value));
+        ++size;
+        parseWhiteSpace(pc);
+        if(*pc->pJson == ',')
+        {
+            ++pc->pJson;
+            parseWhiteSpace(pc);
+        }
+        else if(*pc->pJson == ']')
+        {
+            ++pc->pJson;
+            pv->asize = size;
+            pv->type = Json_t::json_array;
+            size *= sizeof(Json_value);
+            memcpy(pv->pa = (Json_value*)malloc(size), contextPop(pc, size), size);
+            return State::ok;
+        }
+        else
+        {
+            ret = State::miss_comma_or_square_bracket;
+            break;
+        }
+    }
+    for(int i = 0; i < size; ++i)
+        freeJson((Json_value*)contextPop(pc, sizeof(Json_value)));
+    pv->type = Json_t::json_null;
+    return ret;
+}
+
+wt::json::State wt::json::parseObject(Context *pc, Json_value *pv)
+{
+    size_t size = 0;
+    State  ret;
+    Json_member temp;
+    ++pc->pJson;
+    parseWhiteSpace(pc);
+    if(*pc->pJson == '}')
+    {
+        ++pc->pJson;
+        pv->osize = 0;
+        pv->po = nullptr;
+        pv->type = Json_t::json_object;
+        return State::ok;
+    }
+    temp.pk = nullptr;
+    for(;;)
+    {
+        char* str;
+        initJson(&temp.val);
+        if(*pc->pJson != '"')
+        {
+            ret = State::miss_key;
+            break;
+        }
+        if((ret = parseStringRaw(pc, &str, &temp.klen)) != State::ok)
+            break;
+        temp.pk = static_cast<char*>(malloc(temp.klen + 1));
+        memcpy(temp.pk, str, temp.klen);
+        temp.pk[temp.klen] = '\0';
+        parseWhiteSpace(pc);
+        if(*pc->pJson != ':')
+        {
+            ret = State::miss_colon;
+            break;
+        }
+        ++pc->pJson;
+        parseWhiteSpace(pc);
+        if((ret = parseValue(pc, &temp.val)) != State::ok)
+            break;
+        memcpy(contextPush(pc, sizeof(Json_member)), &temp, sizeof(Json_member));
+        temp.pk = nullptr;
+        ++size;
+        parseWhiteSpace(pc);
+        if(*pc->pJson == ',')
+        {
+            ++pc->pJson;
+            parseWhiteSpace(pc);
+        }
+        else if(*pc->pJson == '}')
+        {
+            ++pc->pJson;
+            pv->osize = size;
+            pv->type = Json_t::json_object;
+            size_t cap = size * sizeof(Json_member);
+            pv->po = static_cast<Json_member*>(malloc(cap));
+            memcpy(pv->po, contextPop(pc, cap), cap);
+            return State::ok;
+        }
+        else
+        {
+            ret= State::miss_comma_or_curly_bracket;
+            break;
+        }
+    }
+    free(temp.pk);
+    for(size_t i =0; i < size; ++i)
+    {
+        Json_member* m = static_cast<Json_member*>(contextPop(pc, sizeof(Json_member)));
+        free(m->pk);
+        freeJson(&m->val);
+    }
+    pv->type = Json_t::json_null;
+    return ret;
 }
 
 wt::json::Json_t wt::json::getType(const wt::json::Json_value &v)
@@ -223,8 +360,27 @@ void wt::json::setString(wt::json::Json_value *pv, const char* str, std::size_t 
 void wt::json::freeJson(wt::json::Json_value *pv)
 {
     assert(pv != nullptr);
-    if(pv->type == Json_t::json_string)
-        std::free(pv->pstr);
+    switch(pv->type)
+    {
+        case Json_t::json_string:
+            free(pv->pstr);
+            break;
+        case Json_t::json_array:
+            for(size_t i = 0; i < pv->asize; ++i)
+                freeJson(&pv->pa[i]);
+            free(pv->pa);
+            break;
+        case Json_t::json_object:
+            for(size_t i = 0; i < pv->osize; ++i)
+            {
+                free(pv->po[i].pk);
+                freeJson(&pv->po[i].val);
+            }
+            free(pv->po);
+            break;
+        default:
+            break;
+    }
     pv->type = Json_t::json_null;
 }
 
@@ -247,7 +403,7 @@ void* wt::json::contextPush(wt::json::Context *pc, std::size_t size)
             pc->size = PARSE_STACK_SIZE;
         while(pc->top + size >= pc->size)
             pc->size += pc->size >> 1;
-        pc->pStack = static_cast<char*>(::realloc(pc->pStack, pc->size));
+        pc->pStack = static_cast<char*>(realloc(pc->pStack, pc->size));
     }
     void* ret = pc->pStack + pc->top;
     pc->top += size;
@@ -317,4 +473,40 @@ void wt::json::encodeUTF8(wt::json::Context *pc, unsigned u)
         PUSHC(pc, 0x80 | ((u >> 6) & 0x3F));
         PUSHC(pc, 0x80 | (u & 0x3F));
     }
+}
+
+size_t wt::json::getArraySize(const wt::json::Json_value &pv)
+{
+    assert(pv.type == Json_t::json_array);
+    return pv.asize;
+}
+
+wt::json::Json_value* wt::json::getArrayElem(const wt::json::Json_value &pv, size_t index)
+{
+    assert(pv.type == Json_t::json_array && index < pv.asize);
+    return &pv.pa[index];
+}
+
+size_t wt::json::getObjectsize(const wt::json::Json_value &pv)
+{
+    assert(pv.type == Json_t::json_object);
+    return pv.osize;
+}
+
+const char* wt::json::getObjectKey(const wt::json::Json_value &pv, size_t index)
+{
+    assert(pv.type == Json_t::json_object && index < pv.osize);
+    return pv.po[index].pk;
+}
+
+size_t wt::json::getObjectKeyLen(const wt::json::Json_value &pv, size_t index)
+{
+    assert(pv.type == Json_t::json_object && index < pv.osize);
+    return pv.po[index].klen;
+}
+
+wt::json::Json_value* wt::json::getObjectValue(const wt::json::Json_value &pv, size_t index)
+{
+    assert(pv.type == Json_t::json_object && index < pv.osize);
+    return &pv.po[index].val;
 }
